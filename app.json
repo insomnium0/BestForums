@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "BestForums",
+    "slug": "android-hello",
+    "version": "1.0.0",
+    "icon": "./best.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "com.trevor.bestforums"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "3c98b5f5-a83f-4f37-97e6-c0df1ebcd81b"
+      }
+    },
+    "owner": "insomnium"
+  }
+}
