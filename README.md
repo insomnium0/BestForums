@@ -20,7 +20,17 @@ and shake-to-jump-to-a-random-post.
 
 If the phone cannot connect over the local network, run `npx expo start --tunnel` and scan the new QR code.
 
+
+
 ## Commands
 
 - `npm start` — start Expo and show a QR code.
 - `npm run android` — start Expo and open an attached Android device or emulator.
+
+
+### <ins> WORDS FROM ME, THE MAKER </ins>
+Grievances (so far)
+- text formatting is wonky, gonna make the text ACTUALLY fit on screen
+- starting screen (the screen before the forum opens) is too bland and simple; planning on adding a custom pixel animation for the startup screen
+- the app icon i just threw together in like 3 seconds in the middle of class, definitely going to revamp and make it actually interesting
+- still haven't removed herobrine
