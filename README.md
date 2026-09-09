@@ -1,15 +1,23 @@
 # Android Hello
 
-A device-local Expo/React Native forum demo. It uses Expo SDK 54, which matches
-the current Expo Go release distributed through Google Play.
+A local-first Expo/React Native forum prototype. Profiles and posts persist on a
+device; a small optional WebSocket host lets phones on the same Wi-Fi see the
+same feed and Lobby chat.
 
-Posts, local profiles, and votes persist on the current phone via device storage.
-They are not shared with other devices. Create or switch local profiles to test
-the four-profile vote-to-delete rule.
+## Share a forum on one Wi-Fi network
 
-Features include anonymous or named posts, author-only deletion, optional GPS
-coordinates with a reverse-geocoded place name, selectable display time zones,
-and shake-to-jump-to-a-random-post.
+1. On one computer connected to the Wi-Fi, run `npm run lan-server`.
+2. Find that computer's LAN IP address, for example `192.168.1.10`.
+3. On each phone, open **Profile** in BestForums and enter
+   `ws://192.168.1.10:3000`, then tap **Connect to LAN forum**.
+
+The host saves shared data to `server/data.json`, which is intentionally ignored
+by Git. This is a trusted-LAN demo only: it has no encryption, access control,
+or Internet relay.
+
+Features include anonymous or named posts, topics, sorting/filtering, media
+spoilers, author deletion, four-profile deletion voting, optional GPS metadata,
+time zones, a shake toggle, seed-code copying, and a Lobby chat.
 
 ## Run it on an Android phone
 

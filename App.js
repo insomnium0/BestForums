@@ -1,140 +1,48 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Clipboard from 'expo-clipboard';
+import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { Accelerometer } from 'expo-sensors';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Image, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
-const STORAGE_KEY = '@local_forum_demo_v1';
-const TIME_ZONES = [
-  { label: 'CST', zone: 'America/Chicago' }, { label: 'EST', zone: 'America/New_York' },
-  { label: 'MST', zone: 'America/Denver' }, { label: 'PST', zone: 'America/Los_Angeles' }, { label: 'UTC', zone: 'UTC' },
-];
-const seedPosts = [{ id: 'welcome-post', author: 'Neighborhood Owl', anonymous: false, body: 'Welcome to the local-only forum demo. Shake your phone to jump to a random post.', createdAt: '2026-09-01T12:00:00.000Z', voters: [] }];
-const profileKey = (name) => name.trim().toLowerCase();
-const formatTime = (date, timeZone) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone }).format(new Date(date));
-const locationName = (place) => [place.city || place.district, place.region, place.subregion].filter(Boolean).join(', ');
+const KEY = '@bestforums_v2';
+const TOPICS = ['General', 'Art', 'Tech', 'Business'];
+const TIMES = [{ label: 'CT', zone: 'America/Chicago' }, { label: 'ET', zone: 'America/New_York' }, { label: 'MT', zone: 'America/Denver' }, { label: 'PT', zone: 'America/Los_Angeles' }, { label: 'UTC', zone: 'UTC' }];
+const makeSeed = () => Array.from({ length: 32 }, () => 'abcdefghjkmnpqrstuvwxyz23456789'[Math.floor(Math.random() * 32)]).join('');
+const id = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const stamp = (date, zone) => new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: zone }).format(new Date(date));
 
 export default function App() {
-  const [ready, setReady] = useState(false);
-  const [session, setSession] = useState(null);
-  const [profiles, setProfiles] = useState([]);
-  const [posts, setPosts] = useState([]);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [draft, setDraft] = useState('');
-  const [anonymous, setAnonymous] = useState(true);
-  const [shareLocation, setShareLocation] = useState(false);
-  const [timeZone, setTimeZone] = useState(TIME_ZONES[0]);
-  const [highlightedPost, setHighlightedPost] = useState(null);
-  const scrollView = useRef(null);
-  const postOffsets = useRef({});
-  const lastShake = useRef(0);
+  const [ready, setReady] = useState(false); const [me, setMe] = useState(null); const [posts, setPosts] = useState([]);
+  const [name, setName] = useState(''); const [password, setPassword] = useState(''); const [draft, setDraft] = useState('');
+  const [anonymous, setAnonymous] = useState(true); const [attachLocation, setAttachLocation] = useState(false); const [shakeOn, setShakeOn] = useState(true);
+  const [topic, setTopic] = useState('General'); const [filter, setFilter] = useState('All'); const [sort, setSort] = useState('Newest'); const [zone, setZone] = useState(TIMES[0]);
+  const [serverUrl, setServerUrl] = useState(''); const [connected, setConnected] = useState(false); const [clients, setClients] = useState(0); const [view, setView] = useState('feed');
+  const [media, setMedia] = useState(null); const [spoiler, setSpoiler] = useState(false); const [highlight, setHighlight] = useState(null); const [chat, setChat] = useState(''); const [messages, setMessages] = useState([]);
+  const socket = useRef(null); const scroll = useRef(null); const offsets = useRef({}); const lastShake = useRef(0);
 
-  useEffect(() => {
-    async function restore() {
-      const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const data = JSON.parse(saved);
-        setSession(data.session || null); setProfiles(data.profiles || []); setPosts(data.posts || seedPosts);
-        setTimeZone(TIME_ZONES.find((item) => item.zone === data.timeZone) || TIME_ZONES[0]);
-      } else setPosts(seedPosts);
-      setReady(true);
-    }
-    restore().catch(() => { setPosts(seedPosts); setReady(true); });
-  }, []);
+  useEffect(() => { AsyncStorage.getItem(KEY).then((raw) => { if (raw) { const d = JSON.parse(raw); setMe(d.me); setPosts(d.posts || []); setServerUrl(d.serverUrl || ''); setZone(TIMES.find((x) => x.zone === d.zone) || TIMES[0]); } setReady(true); }).catch(() => setReady(true)); }, []);
+  useEffect(() => { if (ready) AsyncStorage.setItem(KEY, JSON.stringify({ me, posts, serverUrl, zone: zone.zone })); }, [ready, me, posts, serverUrl, zone]);
+  useEffect(() => { if (!me || !shakeOn) return; Accelerometer.setUpdateInterval(250); const sub = Accelerometer.addListener(({ x, y, z }) => { const now = Date.now(); if (Math.hypot(x, y, z) > 1.75 && now - lastShake.current > 1200) { lastShake.current = now; randomPost(); } }); return () => sub.remove(); }, [me, shakeOn, posts]);
+  useEffect(() => () => socket.current?.close(), []);
 
-  useEffect(() => {
-    if (ready) AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ session, profiles, posts, timeZone: timeZone.zone }));
-  }, [ready, session, profiles, posts, timeZone]);
-
-  useEffect(() => {
-    if (!session) return undefined;
-    Accelerometer.setUpdateInterval(250);
-    const subscription = Accelerometer.addListener(({ x, y, z }) => {
-      const force = Math.sqrt(x * x + y * y + z * z); const now = Date.now();
-      if (force > 1.75 && now - lastShake.current > 1200) { lastShake.current = now; jumpToRandomPost(); }
-    });
-    return () => subscription.remove();
-  }, [session, posts]);
-
-  function signIn() {
-    const displayName = username.trim();
-    if (displayName.length < 2 || password.length < 4) { Alert.alert('Enter a username and password', 'Use at least 2 characters for a username and 4 for a password.'); return; }
-    const profile = { id: profileKey(displayName), name: displayName };
-    setProfiles((current) => current.some((item) => item.id === profile.id) ? current : [...current, profile]);
-    setSession(profile); setPassword('');
-  }
-
-  async function publishPost() {
-    const body = draft.trim(); if (!body) return;
-    let location;
-    if (shareLocation) {
-      const permission = await Location.requestForegroundPermissionsAsync();
-      if (permission.status !== 'granted') Alert.alert('Location unavailable', 'Your post will be published without a location.');
-      else try {
-        const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        const [place] = await Location.reverseGeocodeAsync(position.coords);
-        location = { latitude: position.coords.latitude, longitude: position.coords.longitude, name: place ? locationName(place) : 'Approximate location' };
-      } catch { Alert.alert('Location unavailable', 'Your post will be published without a location.'); }
-    }
-    setPosts((current) => [{ id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, author: session.name, authorId: session.id, anonymous, body, createdAt: new Date().toISOString(), location, voters: [] }, ...current]);
-    setDraft('');
-  }
-
-  function deletePost(id) {
-    Alert.alert('Delete post?', 'This only removes it from this device.', [
-      { text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: () => setPosts((current) => current.filter((post) => post.id !== id)) },
-    ]);
-  }
-
-  function voteToDelete(post) {
-    if (post.authorId === session.id) { Alert.alert('Your post', 'Authors cannot vote to delete their own posts.'); return; }
-    const voters = post.voters.includes(session.id) ? post.voters.filter((id) => id !== session.id) : [...post.voters, session.id];
-    if (voters.length >= 4) { setPosts((current) => current.filter((item) => item.id !== post.id)); Alert.alert('Post removed', 'Four local profiles voted to delete it.'); return; }
-    setPosts((current) => current.map((item) => item.id === post.id ? { ...item, voters } : item));
-  }
-
-  function jumpToRandomPost() {
-    if (!posts.length) return;
-    const post = posts[Math.floor(Math.random() * posts.length)]; setHighlightedPost(post.id);
-    const offset = postOffsets.current[post.id];
-    if (offset !== undefined) scrollView.current?.scrollTo({ y: Math.max(0, offset - 12), animated: true });
-    setTimeout(() => setHighlightedPost(null), 1400);
-  }
-
-  if (!ready) return <View style={styles.loading}><Text style={styles.muted}>Loading your local forum…</Text></View>;
-  if (!session) return <SafeAreaView style={styles.screen}><StatusBar style="light" /><View style={styles.loginCard}>
-    <Text style={styles.kicker}>LOCAL FORUM</Text><Text style={styles.title}>Say something.</Text><Text style={styles.muted}>This demo stores profiles and posts only on this phone.</Text>
-    <TextInput value={username} onChangeText={setUsername} placeholder="Display username" placeholderTextColor="#718096" style={styles.input} autoCapitalize="words" />
-    <TextInput value={password} onChangeText={setPassword} placeholder="Password (local demo)" placeholderTextColor="#718096" style={styles.input} secureTextEntry />
-    <Pressable style={styles.primaryButton} onPress={signIn}><Text style={styles.primaryButtonText}>Create / sign in locally</Text></Pressable>
-    <Text style={styles.note}>Google sign-in needs a real OAuth client and backend, so it is intentionally not simulated here.</Text>
-  </View></SafeAreaView>;
-
-  return <SafeAreaView style={styles.screen}><StatusBar style="light" /><ScrollView ref={scrollView} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-    <View style={styles.header}><View><Text style={styles.kicker}>LOCAL FORUM</Text><Text style={styles.heading}>Hi, {session.name}</Text></View><Pressable onPress={() => setSession(null)}><Text style={styles.link}>Switch user</Text></Pressable></View>
-    <Text style={styles.note}>Shake the phone to jump to a random post.</Text>
-    <View style={styles.composer}>
-      <TextInput value={draft} onChangeText={setDraft} placeholder="What is on your mind?" placeholderTextColor="#718096" style={styles.draft} multiline maxLength={600} />
-      <View style={styles.settingRow}><Text style={styles.settingText}>Post anonymously</Text><Switch value={anonymous} onValueChange={setAnonymous} trackColor={{ true: '#14b8a6' }} /></View>
-      <View style={styles.settingRow}><Text style={styles.settingText}>Attach my location</Text><Switch value={shareLocation} onValueChange={setShareLocation} trackColor={{ true: '#14b8a6' }} /></View>
-      <View style={styles.timeZones}>{TIME_ZONES.map((item) => <Pressable key={item.zone} onPress={() => setTimeZone(item)} style={[styles.zoneButton, timeZone.zone === item.zone && styles.zoneButtonActive]}><Text style={[styles.zoneText, timeZone.zone === item.zone && styles.zoneTextActive]}>{item.label}</Text></Pressable>)}</View>
-      <Pressable style={[styles.primaryButton, !draft.trim() && styles.disabledButton]} onPress={publishPost} disabled={!draft.trim()}><Text style={styles.primaryButtonText}>Publish post</Text></Pressable>
-    </View>
-    <View style={styles.feedHeader}><Text style={styles.feedTitle}>Community feed</Text><Text style={styles.count}>{posts.length} posts</Text></View>
-    {posts.map((post) => {
-      const ownPost = post.authorId === session.id; const voted = post.voters.includes(session.id);
-      return <View key={post.id} onLayout={(event) => { postOffsets.current[post.id] = event.nativeEvent.layout.y; }} style={[styles.post, highlightedPost === post.id && styles.highlightedPost]}>
-        <View style={styles.postTop}><Text style={styles.author}>{post.anonymous ? 'Anonymous' : post.author}</Text><Text style={styles.timestamp}>{formatTime(post.createdAt, timeZone.zone)}</Text></View>
-        <Text style={styles.body}>{post.body}</Text>
-        {post.location && <View style={styles.location}><Text style={styles.locationText}>{post.location.latitude.toFixed(4)}, {post.location.longitude.toFixed(4)}</Text><Text style={styles.locationName}>{post.location.name}</Text></View>}
-        <View style={styles.postActions}>{ownPost ? <Pressable onPress={() => deletePost(post.id)}><Text style={styles.deleteText}>Delete my post</Text></Pressable> : <Pressable onPress={() => voteToDelete(post)}><Text style={styles.voteText}>{voted ? 'Remove vote' : 'Vote to delete'} · {post.voters.length}/4</Text></Pressable>}{ownPost && <Text style={styles.count}>{post.voters.length}/4 votes</Text>}</View>
-      </View>;
-    })}
-  </ScrollView></SafeAreaView>;
+  function login() { if (name.trim().length < 2 || password.length < 4) return Alert.alert('Enter a username and password', 'Use 2+ username characters and 4+ password characters.'); setMe({ id: makeSeed(), name: name.trim(), seed: makeSeed(), question: '' }); setPassword(''); }
+  function connect() { const url = serverUrl.trim().replace(/^http/, 'ws'); if (!url) return Alert.alert('Enter the LAN server URL', 'Example: ws://192.168.1.10:3000'); socket.current?.close(); const ws = new WebSocket(url); socket.current = ws; ws.onopen = () => { setConnected(true); ws.send(JSON.stringify({ type: 'import', posts })); }; ws.onclose = () => setConnected(false); ws.onerror = () => Alert.alert('LAN connection failed', 'Check that the server is running and the phone is on the same Wi-Fi.'); ws.onmessage = ({ data }) => { const m = JSON.parse(data); if (m.type === 'state') { setPosts(m.state.posts || []); setMessages(m.state.groups?.[0]?.messages || []); setClients(m.clients || 0); } }; }
+  const send = (message) => socket.current?.readyState === 1 && socket.current.send(JSON.stringify(message));
+  async function pickMedia() { const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images', 'videos'], base64: true, quality: 0.55 }); if (!r.canceled) { const a = r.assets[0]; if (!a.base64) return; setMedia(`data:${a.mimeType || 'image/jpeg'};base64,${a.base64}`); } }
+  async function publish() { if (!draft.trim()) return; let location; if (attachLocation) { const p = await Location.requestForegroundPermissionsAsync(); if (p.status === 'granted') try { const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }); const [place] = await Location.reverseGeocodeAsync(pos.coords); location = { lat: pos.coords.latitude, lng: pos.coords.longitude, name: [place?.city || place?.district, place?.region, place?.subregion].filter(Boolean).join(', ') || 'Approximate location' }; } catch {} }
+    const post = { id: id(), author: me.name, authorId: me.id, anonymous, body: draft.trim(), topic, createdAt: new Date().toISOString(), location, media, spoiler, voters: [] }; if (connected) send({ type: 'post', post }); else setPosts((v) => [post, ...v]); setDraft(''); setMedia(null); setSpoiler(false); }
+  function vote(post) { if (post.authorId === me.id) return Alert.alert('Your post', 'Authors cannot vote to delete their own posts.'); const voters = post.voters.includes(me.id) ? post.voters.filter((x) => x !== me.id) : [...post.voters, me.id]; if (voters.length >= 4) { connected ? send({ type: 'delete', id: post.id }) : setPosts((v) => v.filter((x) => x.id !== post.id)); return; } connected ? send({ type: 'vote', id: post.id, voters }) : setPosts((v) => v.map((x) => x.id === post.id ? { ...x, voters } : x)); }
+  function randomPost() { if (!posts.length) return; const p = posts[Math.floor(Math.random() * posts.length)]; setHighlight(p.id); scroll.current?.scrollTo({ y: Math.max(0, (offsets.current[p.id] || 0) - 12), animated: true }); setTimeout(() => setHighlight(null), 1300); }
+  const visible = posts.filter((p) => filter === 'All' || p.topic === filter).sort((a, b) => sort === 'Oldest' ? +new Date(a.createdAt) - +new Date(b.createdAt) : sort === 'Hot' ? b.voters.length - a.voters.length : +new Date(b.createdAt) - +new Date(a.createdAt));
+  if (!ready) return <View style={s.center}><Text style={s.muted}>Loading BestForums…</Text></View>;
+  if (!me) return <SafeAreaView style={s.screen}><StatusBar style="light" /><View style={s.login}><Text style={s.kicker}>BESTFORUMS</Text><Text style={s.title}>Talk freely.</Text><Text style={s.muted}>Profiles persist on this device. A seed code is your local recovery identity.</Text><TextInput style={s.input} placeholder="Display username" placeholderTextColor="#7b8798" value={name} onChangeText={setName} /><TextInput style={s.input} placeholder="Password (local demo)" placeholderTextColor="#7b8798" secureTextEntry value={password} onChangeText={setPassword} /><Pressable style={s.primary} onPress={login}><Text style={s.primaryText}>Create local profile</Text></Pressable></View></SafeAreaView>;
+  return <SafeAreaView style={s.screen}><StatusBar style="light" /><ScrollView ref={scroll} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled"><View style={s.header}><View><Text style={s.kicker}>BESTFORUMS {connected ? `• ${clients} ONLINE` : '• LOCAL'}</Text><Text style={s.heading}>Hi, {me.name}</Text></View><Pressable onPress={() => setMe(null)}><Text style={s.link}>Switch user</Text></Pressable></View><View style={s.tabs}>{['feed', 'chat', 'profile'].map((x) => <Pressable key={x} onPress={() => setView(x)} style={[s.tab, view === x && s.activeTab]}><Text style={s.tabText}>{x.toUpperCase()}</Text></Pressable>)}</View>
+  {view === 'profile' && <View style={s.card}><Text style={s.cardTitle}>Local identity</Text><Text style={s.muted}>Seed code — save this before changing devices.</Text><Pressable onPress={() => Clipboard.setStringAsync(me.seed)}><Text selectable style={s.seed}>{me.seed}  ⧉</Text></Pressable><TextInput style={s.input} value={serverUrl} onChangeText={setServerUrl} placeholder="ws://192.168.1.10:3000" placeholderTextColor="#7b8798" autoCapitalize="none" /><Pressable style={s.primary} onPress={connect}><Text style={s.primaryText}>{connected ? 'Reconnect LAN forum' : 'Connect to LAN forum'}</Text></Pressable><Text style={s.note}>Run “npm run lan-server” on one computer, then enter its Wi‑Fi IP here. OAuth needs real Google/GitHub credentials and is not simulated.</Text></View>}
+  {view === 'chat' && <View style={s.card}><Text style={s.cardTitle}>Lobby group chat</Text>{messages.map((m) => <Text key={m.id} style={s.chatLine}><Text style={s.author}>{m.author}: </Text>{m.text}</Text>)}<TextInput style={s.input} value={chat} onChangeText={setChat} placeholder="Message the lobby" placeholderTextColor="#7b8798" /><Pressable style={s.primary} onPress={() => { if (chat.trim()) { send({ type: 'chat', groupId: 'lobby', message: { id: id(), author: me.name, text: chat.trim() } }); setChat(''); } }}><Text style={s.primaryText}>Send</Text></Pressable></View>}
+  {view === 'feed' && <><Text style={s.note}>Shake is enabled: <Switch value={shakeOn} onValueChange={setShakeOn} /> Randomly highlights a post.</Text><View style={s.card}><TextInput style={s.draft} value={draft} onChangeText={setDraft} multiline placeholder="What is on your mind?" placeholderTextColor="#7b8798" /><View style={s.row}><Text style={s.label}>Post anonymously</Text><Switch value={anonymous} onValueChange={setAnonymous} /></View><View style={s.row}><Text style={s.label}>Attach my location</Text><Switch value={attachLocation} onValueChange={setAttachLocation} /></View><View style={s.chips}>{TOPICS.map((x) => <Pressable key={x} onPress={() => setTopic(x)} style={[s.chip, topic === x && s.chipOn]}><Text style={s.chipText}>{x}</Text></Pressable>)}</View><Pressable style={s.secondary} onPress={pickMedia}><Text style={s.secondaryText}>{media ? 'Media attached' : 'Add picture / GIF'}</Text></Pressable>{media && <View style={s.row}><Text style={s.label}>Hide media as spoiler</Text><Switch value={spoiler} onValueChange={setSpoiler} /></View>}<View style={s.chips}>{TIMES.map((x) => <Pressable key={x.zone} onPress={() => setZone(x)} style={[s.chip, zone.zone === x.zone && s.chipOn]}><Text style={s.chipText}>{x.label}</Text></Pressable>)}</View><Pressable style={s.primary} onPress={publish}><Text style={s.primaryText}>Publish post</Text></Pressable></View><View style={s.chips}>{['All', ...TOPICS].map((x) => <Pressable key={x} onPress={() => setFilter(x)} style={[s.chip, filter === x && s.chipOn]}><Text style={s.chipText}>{x}</Text></Pressable>)}{['Newest', 'Oldest', 'Hot'].map((x) => <Pressable key={x} onPress={() => setSort(x)} style={[s.chip, sort === x && s.chipOn]}><Text style={s.chipText}>{x}</Text></Pressable>)}</View>{visible.map((p) => <View key={p.id} onLayout={(e) => { offsets.current[p.id] = e.nativeEvent.layout.y; }} style={[s.post, highlight === p.id && s.highlight]}><View style={s.postTop}><Text style={s.author}>{p.anonymous ? 'Anonymous' : p.author} · {p.topic}</Text><Text numberOfLines={1} style={s.time}>{stamp(p.createdAt, zone.zone)}</Text></View><Text style={s.body}>{p.body}</Text>{p.media && <Pressable onPress={() => p.spoiler && setPosts((v) => v.map((x) => x.id === p.id ? { ...x, spoiler: false } : x))} style={p.spoiler && s.spoiler}>{p.spoiler ? <Text style={s.spoilerText}>Spoiler — tap to reveal</Text> : <Image source={{ uri: p.media }} style={s.media} />}</Pressable>}{p.location && <View style={s.location}><Text>{p.location.lat.toFixed(4)}, {p.location.lng.toFixed(4)}</Text><Text>{p.location.name}</Text></View>}<View style={s.row}>{p.authorId === me.id ? <Pressable onPress={() => connected ? send({ type: 'delete', id: p.id }) : setPosts((v) => v.filter((x) => x.id !== p.id))}><Text style={s.delete}>Delete my post</Text></Pressable> : <Pressable onPress={() => vote(p)}><Text style={s.vote}>Vote to delete · {p.voters.length}/4</Text></Pressable>}<Text style={s.muted}>{p.voters.length} votes</Text></View></View>)}</>}</ScrollView></SafeAreaView>;
 }
 
-const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: '#111827' }, loading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111827' }, content: { padding: 18, paddingBottom: 42 }, header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }, kicker: { color: '#2dd4bf', fontSize: 12, fontWeight: '800', letterSpacing: 1.5 }, heading: { color: '#f8fafc', fontSize: 28, fontWeight: '800', marginTop: 3 }, title: { color: '#f8fafc', fontSize: 34, fontWeight: '800', marginVertical: 8 }, muted: { color: '#94a3b8', fontSize: 15, lineHeight: 22 }, link: { color: '#5eead4', fontWeight: '700' }, note: { color: '#94a3b8', fontSize: 13, lineHeight: 19, marginTop: 10 }, loginCard: { margin: 22, marginTop: 120 }, input: { backgroundColor: '#1f2937', borderColor: '#374151', borderWidth: 1, borderRadius: 10, color: '#f8fafc', fontSize: 16, marginTop: 16, padding: 14 }, primaryButton: { alignItems: 'center', backgroundColor: '#14b8a6', borderRadius: 10, marginTop: 16, padding: 14 }, disabledButton: { opacity: 0.45 }, primaryButtonText: { color: '#042f2e', fontSize: 16, fontWeight: '800' }, composer: { backgroundColor: '#1f2937', borderColor: '#374151', borderWidth: 1, borderRadius: 14, marginTop: 16, padding: 14 }, draft: { color: '#f8fafc', fontSize: 16, minHeight: 84, textAlignVertical: 'top' }, settingRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 }, settingText: { color: '#dbeafe', fontSize: 15 }, timeZones: { flexDirection: 'row', flexWrap: 'wrap', marginTop: 14 }, zoneButton: { borderColor: '#475569', borderRadius: 18, borderWidth: 1, marginBottom: 6, marginRight: 6, paddingHorizontal: 10, paddingVertical: 6 }, zoneButtonActive: { backgroundColor: '#ccfbf1', borderColor: '#ccfbf1' }, zoneText: { color: '#cbd5e1', fontSize: 12, fontWeight: '700' }, zoneTextActive: { color: '#115e59' }, feedHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 24, marginBottom: 8 }, feedTitle: { color: '#f8fafc', fontSize: 20, fontWeight: '800' }, count: { color: '#94a3b8', fontSize: 13 }, post: { backgroundColor: '#1f2937', borderColor: '#374151', borderWidth: 1, borderRadius: 14, marginTop: 10, padding: 15 }, highlightedPost: { borderColor: '#2dd4bf', borderWidth: 2 }, postTop: { flexDirection: 'row', justifyContent: 'space-between' }, author: { color: '#5eead4', fontSize: 15, fontWeight: '800' }, timestamp: { color: '#94a3b8', fontSize: 12, marginLeft: 12, textAlign: 'right' }, body: { color: '#f1f5f9', fontSize: 16, lineHeight: 23, marginTop: 11 }, location: { backgroundColor: 'rgba(148, 163, 184, 0.18)', borderRadius: 8, marginTop: 14, padding: 10 }, locationText: { color: '#cbd5e1', fontSize: 12, fontVariant: ['tabular-nums'] }, locationName: { color: '#e2e8f0', fontSize: 13, marginTop: 3 }, postActions: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 15 }, voteText: { color: '#fcd34d', fontWeight: '700' }, deleteText: { color: '#fca5a5', fontWeight: '700' },
-});
+const s = StyleSheet.create({ screen:{flex:1,backgroundColor:'#111827'},center:{flex:1,alignItems:'center',justifyContent:'center',backgroundColor:'#111827'},content:{padding:18,paddingTop:Platform.OS==='android'?42:18,paddingBottom:44},login:{padding:24,paddingTop:110},header:{flexDirection:'row',justifyContent:'space-between',alignItems:'flex-end'},kicker:{color:'#2dd4bf',fontSize:12,fontWeight:'800',letterSpacing:1.2},heading:{color:'#fff',fontSize:28,fontWeight:'800'},title:{color:'#fff',fontSize:34,fontWeight:'800',marginVertical:8},muted:{color:'#94a3b8',fontSize:13},note:{color:'#94a3b8',fontSize:13,lineHeight:19,marginTop:10},link:{color:'#5eead4',fontWeight:'700'},tabs:{flexDirection:'row',marginTop:16},tab:{padding:10,marginRight:6,borderRadius:8,backgroundColor:'#1f2937'},activeTab:{backgroundColor:'#115e59'},tabText:{color:'#dbeafe',fontSize:12,fontWeight:'800'},card:{backgroundColor:'#1f2937',borderColor:'#374151',borderWidth:1,borderRadius:14,padding:14,marginTop:14},cardTitle:{color:'#fff',fontSize:19,fontWeight:'800'},input:{backgroundColor:'#111827',borderColor:'#475569',borderWidth:1,borderRadius:9,color:'#fff',padding:12,marginTop:12},draft:{color:'#fff',fontSize:16,minHeight:80,textAlignVertical:'top'},primary:{alignItems:'center',backgroundColor:'#14b8a6',borderRadius:9,padding:13,marginTop:12},primaryText:{color:'#042f2e',fontWeight:'800'},secondary:{alignItems:'center',borderColor:'#2dd4bf',borderWidth:1,borderRadius:9,padding:11,marginTop:10},secondaryText:{color:'#5eead4',fontWeight:'700'},row:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',marginTop:10},label:{color:'#dbeafe'},chips:{flexDirection:'row',flexWrap:'wrap',marginTop:10},chip:{borderColor:'#475569',borderWidth:1,borderRadius:16,paddingHorizontal:9,paddingVertical:6,marginRight:6,marginBottom:5},chipOn:{backgroundColor:'#ccfbf1',borderColor:'#ccfbf1'},chipText:{color:'#dbeafe',fontSize:12,fontWeight:'700'},seed:{color:'#5eead4',fontFamily:Platform.OS==='ios'?'Menlo':'monospace',marginTop:10},post:{backgroundColor:'#1f2937',borderColor:'#374151',borderWidth:1,borderRadius:14,padding:14,marginTop:10},highlight:{borderColor:'#2dd4bf',borderWidth:2},postTop:{flexDirection:'row',justifyContent:'space-between',alignItems:'center'},author:{color:'#5eead4',fontWeight:'800',flexShrink:1},time:{color:'#cbd5e1',fontSize:12,marginLeft:8,flexShrink:1},body:{color:'#f8fafc',fontSize:16,lineHeight:23,marginTop:10},location:{backgroundColor:'rgba(148,163,184,.2)',borderRadius:8,padding:9,marginTop:10},media:{width:'100%',height:210,borderRadius:8,marginTop:10},spoiler:{height:120,backgroundColor:'#334155',borderRadius:8,alignItems:'center',justifyContent:'center',marginTop:10},spoilerText:{color:'#e2e8f0'},delete:{color:'#fca5a5',fontWeight:'700'},vote:{color:'#fcd34d',fontWeight:'700'},chatLine:{color:'#f8fafc',marginTop:8}, });

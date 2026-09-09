@@ -5,7 +5,7 @@ location toggle
 voting for deletion (4 users must all vote on a post to delete it)
 
 to come:
-toggle shake for random post
+toggle button for shake for random post
 
 categories/topic tabs, with post flairs to immediately have a post go into the respective category
 (also vote (maybe?) to establish subcategory)
