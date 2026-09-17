@@ -7,17 +7,36 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "android": {
-      "package": "com.trevor.bestforums",
-      "usesCleartextTraffic": true
+      "package": "com.trevor.bestforums"
     },
     "extra": {
       "eas": {
         "projectId": "3c98b5f5-a83f-4f37-97e6-c0df1ebcd81b"
       }
     },
-    "owner": "insomnium",
+    "owner": "smu-c3-mobile-fall-26",
     "plugins": [
-      "expo-status-bar"
-    ]
+      "expo-status-bar",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "ios": {
+      "bundleIdentifier": "com.trevor.bestforums",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/3c98b5f5-a83f-4f37-97e6-c0df1ebcd81b"
+    }
   }
 }
