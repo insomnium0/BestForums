@@ -1,10 +1,10 @@
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 
 const port = Number(process.env.PORT || 3000);
-const dataFile = path.join(__dirname, 'data.json');
+const dataFile = process.env.BESTFORUMS_DATA_FILE || path.join(__dirname, 'data.json');
 let state = { posts: [], groups: [{ id: 'lobby', name: 'Lobby', messages: [] }] };
 
 try { state = { ...state, ...JSON.parse(fs.readFileSync(dataFile, 'utf8')) }; } catch {}
@@ -16,7 +16,9 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 const broadcast = () => {
   const message = JSON.stringify({ type: 'state', state, clients: wss.clients.size });
-  wss.clients.forEach((client) => client.readyState === client.OPEN && client.send(message));
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) client.send(message);
+  });
 };
 
 wss.on('connection', (socket) => {
