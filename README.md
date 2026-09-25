@@ -15,9 +15,32 @@ The host saves shared data to `server/data.json`, which is intentionally ignored
 by Git. This is a trusted-LAN demo only: it has no encryption, access control,
 or Internet relay.
 
-Features include anonymous or named posts, topics, sorting/filtering, media
-spoilers, author deletion, four-profile deletion voting, optional GPS metadata,
-time zones, a shake toggle, seed-code copying, and a Lobby chat.
+Features include named accounts and seed-only anonymous identities, topics,
+sorting/filtering, media spoilers, author deletion, four-profile deletion
+voting, optional GPS metadata, time zones, a shake toggle, and a Lobby chat.
+The last signed-in account is restored on that device unless the person logs
+out. This is local-demo authentication: named passwords live only in that
+device's app storage, so a real public app needs a backend and secure auth.
+
+## GIF search and performance testing
+
+The Feed's **Performance test** generates 250 posts immediately. When connected
+to the LAN host, it sends all 250 posts to the shared server, intentionally
+stressing server writes, broadcasts, feed rendering, and local storage.
+
+The Feed's GIF panel uses GIPHY. To enable it:
+
+1. Create or sign in to a developer account at
+   [GIPHY Developers](https://developers.giphy.com/dashboard/).
+2. Create an API key in its dashboard.
+3. Copy `.env.example` to `.env.local` and set
+   `EXPO_PUBLIC_GIPHY_API_KEY=your_key`.
+4. Restart Expo after saving the file.
+
+GIPHY requires attribution; the app displays “Powered By GIPHY” below search
+results. The key is included in the client app, so use a GIPHY client key and
+monitor/restrict it in GIPHY's dashboard—never put a private server secret in
+an `EXPO_PUBLIC_` variable or commit `.env.local`.
 
 ## Run it on an Android phone
 

@@ -2,5 +2,7 @@ node_modules/
 .expo/
 dist/
 npm-debug.*
+.env
+.env.local
 server/data.json
 CODE_TOUR.txt
