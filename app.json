@@ -24,6 +24,10 @@
             "usesCleartextTraffic": true
           }
         }
+      ],
+      [
+        "./plugins/withAsyncStorageDbSize",
+        100
       ]
     ],
     "ios": {

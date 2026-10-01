@@ -5,4 +5,8 @@ npm-debug.*
 .env
 .env.local
 server/data.json
+server/bestforums.sqlite
+server/bestforums.sqlite-shm
+server/bestforums.sqlite-wal
+server/archives/
 CODE_TOUR.txt

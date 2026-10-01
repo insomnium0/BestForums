@@ -2,6 +2,9 @@
   "name": "android-hello",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=22.16.0"
+  },
   "main": "index.js",
   "scripts": {
     "start": "expo start --go",

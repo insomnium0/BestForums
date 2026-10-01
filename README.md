@@ -11,9 +11,34 @@ same feed and Lobby chat.
 3. On each phone, open **Profile** in BestForums and enter
    `ws://192.168.1.10:3000`, then tap **Connect to LAN forum**.
 
-The host saves shared data to `server/data.json`, which is intentionally ignored
-by Git. This is a trusted-LAN demo only: it has no encryption, access control,
-or Internet relay.
+The host stores the complete shared history in `server/bestforums.sqlite` and
+keeps phone sync light by sending only the most recent 80 posts and 150 chat
+messages to each client. Older history remains in the server database. The old
+`server/data.json` is automatically imported the first time the new server runs,
+so existing LAN posts and chats are preserved.
+
+Run the LAN server with Node.js 22.16 or newer:
+
+```bash
+npm run lan-server
+```
+
+### Archive LAN history
+
+The server makes a SQLite archive at startup, once per day, and when it shuts
+down cleanly. While connected, **Profile → CREATE & COPY LAN BACKUP LINK**
+creates another snapshot and copies a download URL. Paste that URL into a
+browser on the laptop running the server to download the `.sqlite` archive.
+You can also list old snapshots at:
+
+```text
+http://YOUR_COMPUTER_IP:3000/archives
+```
+
+Archives are self-contained SQLite files: retain them in a separate backup
+location, then open them later with a SQLite browser if needed. The server and
+archive directory are intentionally ignored by Git. This remains a trusted-LAN
+demo only: it has no encryption, access control, or Internet relay.
 
 Features include named accounts and seed-only anonymous identities, topics,
 sorting/filtering, media spoilers, author deletion, four-profile deletion
