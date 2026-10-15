@@ -25,11 +25,14 @@ npm run lan-server
 
 ### Archive LAN history
 
-The server makes a SQLite archive at startup, once per day, and when it shuts
-down cleanly. While connected, **Profile → CREATE & COPY LAN BACKUP LINK**
-creates another snapshot and copies a download URL. Paste that URL into a
-browser on the laptop running the server to download the `.sqlite` archive.
-You can also list old snapshots at:
+The server makes a complete SQLite archive at startup, once per day, and when it
+shuts down cleanly. While connected, **Profile → ARCHIVE LAN CHAT & FORUM**
+also creates a readable `.chat.json` transcript of every archived LAN chat.
+Both download URLs are copied to the clipboard. Paste them into a browser on
+the computer running the server (or another device on that Wi-Fi) to download
+them. The SQLite file contains the complete forum and chat database; the JSON
+file is convenient for reading or importing chat history. You can also list old
+snapshots at:
 
 ```text
 http://YOUR_COMPUTER_IP:3000/archives
@@ -47,11 +50,7 @@ The last signed-in account is restored on that device unless the person logs
 out. This is local-demo authentication: named passwords live only in that
 device's app storage, so a real public app needs a backend and secure auth.
 
-## GIF search and performance testing
-
-The Feed's **Performance test** generates 250 posts immediately. When connected
-to the LAN host, it sends all 250 posts to the shared server, intentionally
-stressing server writes, broadcasts, feed rendering, and local storage.
+## GIF search
 
 The Feed's GIF panel uses GIPHY. To enable it:
 

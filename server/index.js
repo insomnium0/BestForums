@@ -30,13 +30,12 @@ db.exec(`
 const postCount = db.prepare('SELECT COUNT(*) AS count FROM posts');
 const insertPost = db.prepare('INSERT OR IGNORE INTO posts (id, payload, created_at) VALUES (?, ?, ?)');
 const deletePost = db.prepare('DELETE FROM posts WHERE id = ?');
-const clearSpikePosts = db.prepare("DELETE FROM posts WHERE json_extract(payload, '$.spike') = 1");
 const updatePost = db.prepare('UPDATE posts SET payload = ? WHERE id = ?');
 const recentPosts = db.prepare('SELECT payload FROM posts ORDER BY created_at DESC LIMIT ?');
 const allPosts = db.prepare('SELECT payload FROM posts ORDER BY created_at DESC');
 const insertMessage = db.prepare('INSERT OR IGNORE INTO messages (id, group_id, payload, received_at) VALUES (?, ?, ?, ?)');
 const recentMessages = db.prepare('SELECT payload FROM messages WHERE group_id = ? ORDER BY received_at DESC LIMIT ?');
-const allMessages = db.prepare('SELECT payload FROM messages WHERE group_id = ? ORDER BY received_at ASC');
+const archivedMessages = db.prepare('SELECT group_id, payload, received_at FROM messages ORDER BY received_at ASC');
 
 const asTime = (value) => {
   const time = Date.parse(value || '');
@@ -44,7 +43,12 @@ const asTime = (value) => {
 };
 const parseRows = (rows) => rows.map((row) => JSON.parse(row.payload));
 const addPost = (post) => { if (post?.id) insertPost.run(post.id, JSON.stringify(post), asTime(post.createdAt)); };
-const addMessage = (groupId, message) => { if (message?.id) insertMessage.run(message.id, groupId || 'lobby', JSON.stringify(message), asTime(String(message.id).split('-')[0])); };
+const addMessage = (groupId, message) => {
+  if (!message?.id) return;
+  const receivedAt = Date.now();
+  const savedMessage = { ...message, createdAt: message.createdAt || new Date(receivedAt).toISOString() };
+  insertMessage.run(savedMessage.id, groupId || 'lobby', JSON.stringify(savedMessage), receivedAt);
+};
 
 // Preserve forums made with the earlier JSON-only LAN server on first upgrade.
 if (postCount.get().count === 0 && fs.existsSync(dataFile)) {
@@ -70,11 +74,19 @@ const clientState = () => ({
   groups: [{ id: 'lobby', name: 'Lobby', messages: parseRows(recentMessages.all('lobby', clientMessageLimit)).reverse() }],
 });
 const safeStamp = () => new Date().toISOString().replace(/[:.]/g, '-');
-const archiveFileName = (reason) => `bestforums-${safeStamp()}-${reason}.sqlite`;
+const archiveBaseName = (reason) => `bestforums-${safeStamp()}-${reason.replace(/[^a-z0-9-]/gi, '-')}`;
 async function createArchive(reason = 'manual') {
-  const file = path.join(archiveDir, archiveFileName(reason.replace(/[^a-z0-9-]/gi, '-')));
-  await backup(db, file, { rate: 100 });
-  return file;
+  const baseName = archiveBaseName(reason);
+  const databasePath = path.join(archiveDir, `${baseName}.sqlite`);
+  const chatPath = path.join(archiveDir, `${baseName}.chat.json`);
+  await backup(db, databasePath, { rate: 100 });
+  const conversations = archivedMessages.all().reduce((groups, row) => {
+    const messages = groups[row.group_id] || (groups[row.group_id] = []);
+    messages.push({ ...JSON.parse(row.payload), receivedAt: new Date(row.received_at).toISOString() });
+    return groups;
+  }, {});
+  await fs.promises.writeFile(chatPath, `${JSON.stringify({ format: 'bestforums-chat-archive/v1', createdAt: new Date().toISOString(), conversations }, null, 2)}\n`, 'utf8');
+  return { databasePath, chatPath };
 }
 const archiveList = () => fs.readdirSync(archiveDir)
   .filter((name) => name.endsWith('.sqlite'))
@@ -91,16 +103,19 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'GET' && url.pathname === '/archives') return sendJson(response, 200, { archives: archiveList() });
   if (request.method === 'POST' && url.pathname === '/archives') {
     try {
-      const file = await createArchive('manual');
-      const name = path.basename(file);
-      return sendJson(response, 201, { name, downloadUrl: `${url.origin}/archives/${encodeURIComponent(name)}` });
+      const archive = await createArchive('manual');
+      const databaseName = path.basename(archive.databasePath);
+      const chatName = path.basename(archive.chatPath);
+      return sendJson(response, 201, { database: { name: databaseName, downloadUrl: `${url.origin}/archives/${encodeURIComponent(databaseName)}` }, chat: { name: chatName, downloadUrl: `${url.origin}/archives/${encodeURIComponent(chatName)}` } });
     } catch (error) { return sendJson(response, 500, { error: `Archive failed: ${error.message}` }); }
   }
   if (request.method === 'GET' && url.pathname.startsWith('/archives/')) {
     const name = path.basename(decodeURIComponent(url.pathname.slice('/archives/'.length)));
     const file = path.join(archiveDir, name);
-    if (name !== path.basename(name) || !name.endsWith('.sqlite') || !fs.existsSync(file)) return sendJson(response, 404, { error: 'Archive not found' });
-    response.writeHead(200, { 'Content-Type': 'application/vnd.sqlite3', 'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': fs.statSync(file).size });
+    const isDatabase = name.endsWith('.sqlite');
+    const isChatTranscript = name.endsWith('.chat.json');
+    if (name !== path.basename(name) || (!isDatabase && !isChatTranscript) || !fs.existsSync(file)) return sendJson(response, 404, { error: 'Archive not found' });
+    response.writeHead(200, { 'Content-Type': isDatabase ? 'application/vnd.sqlite3' : 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': fs.statSync(file).size });
     return fs.createReadStream(file).pipe(response);
   }
   return sendJson(response, 404, { error: 'Not found' });
@@ -126,10 +141,6 @@ wss.on('connection', (socket) => {
       }
       if (message.type === 'post') addPost(message.post);
       if (message.type === 'delete' && message.id) deletePost.run(message.id);
-      if (message.type === 'clear-spike') {
-        await createArchive('before-clear-spike');
-        clearSpikePosts.run();
-      }
       if (message.type === 'vote' && message.id && Array.isArray(message.voters)) {
         const post = getPost(message.id);
         if (post) updatePost.run(JSON.stringify({ ...post, voters: message.voters }), post.id);
