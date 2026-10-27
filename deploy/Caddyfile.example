@@ -1,0 +1,7 @@
+# Replace forum.example.com with the domain or Dynamic-DNS hostname you control.
+# DNS: create an A/AAAA record for this name pointing to your public IP.
+# Router: forward public TCP 443 to this computer. Do not expose port 3000.
+
+forum.example.com {
+    reverse_proxy 127.0.0.1:3000
+}
