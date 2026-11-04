@@ -1,15 +1,17 @@
 # BestForums
 
-A local-first Expo/React Native forum prototype. Profiles and posts persist on a
-device; a small optional WebSocket host lets phones on the same Wi-Fi see the
-same feed and Lobby chat.
+For the persistent laptop-server setup (LAN, Internet, TLS, backups, and GIF-key setup), see [docs/LAPTOP_SERVER.md](docs/LAPTOP_SERVER.md).
+
+A React Native forum with a Node/SQLite server. Accounts, posts, replies,
+profile avatars, Lobby chat, and direct messages persist on the server.
 
 ## Share a forum on one Wi-Fi network
 
 1. On one computer connected to the Wi-Fi, run `npm run lan-server`.
-2. Find that computer's LAN IP address, for example `192.168.1.10`.
-3. On each phone, open **Profile** in BestForums and enter
-   `ws://192.168.1.10:3000`, then tap **Connect to LAN forum**.
+2. The terminal prints a BestForums server QR code. On each phone, tap
+   **SCAN SERVER QR** on the sign-in screen and scan it; the server address is
+   filled in automatically.
+3. Create an account, then open **Local Communities** and tap **Connect to server**.
 
 The host stores the complete shared history in `server/bestforums.sqlite` and
 keeps phone sync light by sending only the most recent 80 posts and 150 chat
@@ -40,15 +42,12 @@ http://YOUR_COMPUTER_IP:3000/archives
 
 Archives are self-contained SQLite files: retain them in a separate backup
 location, then open them later with a SQLite browser if needed. The server and
-archive directory are intentionally ignored by Git. This remains a trusted-LAN
-demo only: it has no encryption, access control, or Internet relay.
+archive directory are intentionally ignored by Git. For encrypted Internet
+access with `wss://`, Caddy, Dynamic DNS, router setup, and backups, follow
+[docs/LAPTOP_SERVER.md](docs/LAPTOP_SERVER.md).
 
-Features include named accounts and seed-only anonymous identities, topics,
-sorting/filtering, media spoilers, author deletion, four-profile deletion
-voting, optional GPS metadata, time zones, a shake toggle, and a Lobby chat.
-The last signed-in account is restored on that device unless the person logs
-out. This is local-demo authentication: named passwords live only in that
-device's app storage, so a real public app needs a backend and secure auth.
+Passwords are hashed on the server; sessions are stored securely on each phone.
+The last signed-in account is restored unless the person logs out.
 
 ## GIF search
 

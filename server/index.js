@@ -1,7 +1,9 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
+const qr = require('qrcode-terminal');
 const { backup, DatabaseSync } = require('node:sqlite');
 const { WebSocketServer, WebSocket } = require('ws');
 
@@ -27,10 +29,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS posts_created_at ON posts(created_at DESC);
   CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, group_id TEXT NOT NULL, payload TEXT NOT NULL, received_at INTEGER NOT NULL) STRICT;
   CREATE INDEX IF NOT EXISTS messages_received_at ON messages(received_at ASC);
-  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL) STRICT;
+  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL COLLATE NOCASE UNIQUE, password_salt TEXT NOT NULL, password_hash TEXT NOT NULL, avatar TEXT NOT NULL DEFAULT '🙂', created_at INTEGER NOT NULL) STRICT;
   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL) STRICT;
   CREATE INDEX IF NOT EXISTS sessions_expires_at ON sessions(expires_at);
 `);
+// Migrate servers created before profile avatars existed.
+if (!db.prepare('PRAGMA table_info(users)').all().some((column) => column.name === 'avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT');
+db.exec("UPDATE users SET avatar = '🙂' WHERE avatar IS NULL OR avatar = ''");
 
 const postCount = db.prepare('SELECT COUNT(*) AS count FROM posts');
 const insertPost = db.prepare('INSERT OR IGNORE INTO posts (id, payload, created_at) VALUES (?, ?, ?)');
@@ -40,11 +45,14 @@ const recentPosts = db.prepare('SELECT payload FROM posts ORDER BY created_at DE
 const allPosts = db.prepare('SELECT payload FROM posts ORDER BY created_at DESC');
 const insertMessage = db.prepare('INSERT OR IGNORE INTO messages (id, group_id, payload, received_at) VALUES (?, ?, ?, ?)');
 const recentMessages = db.prepare('SELECT payload FROM messages WHERE group_id = ? ORDER BY received_at DESC LIMIT ?');
+const recentDirectMessages = db.prepare("SELECT group_id, payload FROM messages WHERE group_id LIKE 'dm:%' ORDER BY received_at DESC LIMIT ?");
 const archivedMessages = db.prepare('SELECT group_id, payload, received_at FROM messages ORDER BY received_at ASC');
-const findUserByName = db.prepare('SELECT id, username, password_salt, password_hash FROM users WHERE username = ?');
-const insertUser = db.prepare('INSERT INTO users (id, username, password_salt, password_hash, created_at) VALUES (?, ?, ?, ?, ?)');
+const findUserByName = db.prepare('SELECT id, username, password_salt, password_hash, avatar FROM users WHERE username = ?');
+const insertUser = db.prepare('INSERT INTO users (id, username, password_salt, password_hash, avatar, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+const listUsers = db.prepare('SELECT id, username, avatar FROM users ORDER BY username COLLATE NOCASE');
+const updateUserAvatar = db.prepare('UPDATE users SET avatar = ? WHERE id = ?');
 const insertSession = db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)');
-const findSession = db.prepare('SELECT users.id, users.username FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?');
+const findSession = db.prepare('SELECT users.id, users.username, users.avatar FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ?');
 const deleteSession = db.prepare('DELETE FROM sessions WHERE token_hash = ?');
 const deleteExpiredSessions = db.prepare('DELETE FROM sessions WHERE expires_at <= ?');
 
@@ -52,7 +60,8 @@ const SESSION_DAYS = Number(process.env.BESTFORUMS_SESSION_DAYS || 30);
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
 const passwordHash = (password, salt) => crypto.scryptSync(password, salt, 64).toString('hex');
 const validUsername = (username) => /^[a-zA-Z0-9_.-]{2,32}$/.test(username);
-const publicUser = (user) => ({ id: user.id, username: user.username });
+const lanAddress = () => Object.values(os.networkInterfaces()).flat().find((address) => address && address.family === 'IPv4' && !address.internal)?.address;
+const publicUser = (user) => ({ id: user.id, username: user.username, avatar: user.avatar || '🙂' });
 function createSession(user) {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = Date.now();
@@ -100,9 +109,20 @@ const getPost = (postId) => {
   const row = db.prepare('SELECT payload FROM posts WHERE id = ?').get(postId);
   return row ? JSON.parse(row.payload) : null;
 };
-const clientState = () => ({
+const directGroupIdsFor = (userId) => {
+  const groups = new Map();
+  for (const row of recentDirectMessages.all(clientMessageLimit * 10)) {
+    const [, first, second] = row.group_id.split(':');
+    if (first !== userId && second !== userId) continue;
+    const messages = groups.get(row.group_id) || [];
+    if (messages.length < clientMessageLimit) messages.push(JSON.parse(row.payload));
+    groups.set(row.group_id, messages);
+  }
+  return [...groups].map(([groupId, messages]) => ({ id: groupId, name: 'Direct message', messages: messages.reverse() }));
+};
+const clientState = (user) => ({
   posts: parseRows(recentPosts.all(clientPostLimit)),
-  groups: [{ id: 'lobby', name: 'Lobby', messages: parseRows(recentMessages.all('lobby', clientMessageLimit)).reverse() }],
+  groups: [{ id: 'lobby', name: 'Lobby', messages: parseRows(recentMessages.all('lobby', clientMessageLimit)).reverse() }, ...directGroupIdsFor(user.id)],
 });
 const safeStamp = () => new Date().toISOString().replace(/[:.]/g, '-');
 const archiveBaseName = (reason) => `bestforums-${safeStamp()}-${reason.replace(/[^a-z0-9-]/gi, '-')}`;
@@ -138,9 +158,9 @@ const server = http.createServer(async (request, response) => {
       if (!validUsername(cleanName)) return sendJson(response, 400, { error: 'Username must be 2–32 characters: letters, numbers, dot, underscore, or hyphen.' });
       if (typeof password !== 'string' || password.length < 8) return sendJson(response, 400, { error: 'Password must contain at least 8 characters.' });
       if (findUserByName.get(cleanName)) return sendJson(response, 409, { error: 'That username is already taken.' });
-      const user = { id: crypto.randomUUID(), username: cleanName };
+      const user = { id: crypto.randomUUID(), username: cleanName, avatar: '🙂' };
       const salt = crypto.randomBytes(16).toString('hex');
-      insertUser.run(user.id, user.username, salt, passwordHash(password, salt), Date.now());
+      insertUser.run(user.id, user.username, salt, passwordHash(password, salt), user.avatar, Date.now());
       return sendJson(response, 201, createSession(user));
     } catch (error) { return sendJson(response, 400, { error: error.message || 'Could not create account.' }); }
   }
@@ -148,6 +168,7 @@ const server = http.createServer(async (request, response) => {
     try {
       const { username, password } = await readJson(request);
       const user = findUserByName.get(String(username || '').trim());
+      if (!user) return sendJson(response, 404, { error: 'No account exists with that username. Create an account first.' });
       const submitted = typeof password === 'string' && user ? Buffer.from(passwordHash(password, user.password_salt), 'hex') : null;
       const stored = user ? Buffer.from(user.password_hash, 'hex') : null;
       if (!submitted || !stored || submitted.length !== stored.length || !crypto.timingSafeEqual(submitted, stored)) return sendJson(response, 401, { error: 'Incorrect username or password.' });
@@ -159,6 +180,23 @@ const server = http.createServer(async (request, response) => {
   }
   if (request.method === 'GET' && url.pathname === '/auth/me') {
     const user = sessionForToken(authToken(request)); return user ? sendJson(response, 200, { user: publicUser(user) }) : sendJson(response, 401, { error: 'Sign in required.' });
+  }
+  if (request.method === 'POST' && url.pathname === '/auth/profile') {
+    const user = sessionForToken(authToken(request));
+    if (!user) return sendJson(response, 401, { error: 'Sign in required.' });
+    try {
+      const { avatar } = await readJson(request);
+      const cleanAvatar = String(avatar || '').trim();
+      if (!['🙂', '😎', '🎨', '🎮', '🌙', '🦊', '🐸', '🛸'].includes(cleanAvatar)) return sendJson(response, 400, { error: 'Choose an avatar from the profile list.' });
+      updateUserAvatar.run(cleanAvatar, user.id);
+      user.avatar = cleanAvatar;
+      return sendJson(response, 200, { user: publicUser(user) });
+    } catch (error) { return sendJson(response, 400, { error: error.message || 'Could not update profile.' }); }
+  }
+  if (request.method === 'GET' && url.pathname === '/users') {
+    const user = sessionForToken(authToken(request));
+    if (!user) return sendJson(response, 401, { error: 'Sign in required.' });
+    return sendJson(response, 200, { users: listUsers.all().filter((person) => person.id !== user.id).map(publicUser) });
   }
   if (request.method === 'GET' && url.pathname === '/') return sendJson(response, 200, { ok: true, clients: [...wss.clients].filter((client) => client.user).length, totalPosts: postCount.get().count, auth: '/auth/login', archives: '/archives' });
   if (request.method === 'GET' && url.pathname === '/archives') { if (!sessionForToken(authToken(request))) return sendJson(response, 401, { error: 'Sign in required.' }); return sendJson(response, 200, { archives: archiveList() }); }
@@ -186,10 +224,9 @@ const server = http.createServer(async (request, response) => {
 });
 
 const wss = new WebSocketServer({ server });
-const stateMessage = () => JSON.stringify({ type: 'state', state: clientState(), clients: [...wss.clients].filter((client) => client.user).length, totalPosts: postCount.get().count, clientPostLimit, clientMessageLimit });
+const stateMessage = (socket) => JSON.stringify({ type: 'state', state: clientState(socket.user), clients: [...wss.clients].filter((client) => client.user).length, totalPosts: postCount.get().count, clientPostLimit, clientMessageLimit });
 const broadcast = () => {
-  const message = stateMessage();
-  wss.clients.forEach((client) => { if (client.user && client.readyState === WebSocket.OPEN) client.send(message); });
+  wss.clients.forEach((client) => { if (client.user && client.readyState === WebSocket.OPEN) client.send(stateMessage(client)); });
 };
 
 wss.on('connection', (socket) => {
@@ -203,7 +240,7 @@ wss.on('connection', (socket) => {
         if (!user) { socket.send(JSON.stringify({ type: 'auth-error', message: 'Your session has expired. Sign in again.' })); return; }
         socket.user = user;
         socket.send(JSON.stringify({ type: 'auth', user: publicUser(user) }));
-        socket.send(stateMessage());
+        socket.send(stateMessage(socket));
         broadcast();
         return;
       }
@@ -213,15 +250,20 @@ wss.on('connection', (socket) => {
         (message.posts || []).forEach(addPost);
         db.exec('COMMIT');
       }
-      if (message.type === 'post' && message.post) addPost({ ...message.post, author: socket.user.username, authorId: socket.user.id, anonymous: false });
+      if (message.type === 'post' && message.post) addPost({ ...message.post, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || '🙂', anonymous: false });
       if (message.type === 'update' && message.post?.id) { const existing = getPost(message.post.id); if (existing?.authorId === socket.user.id) updatePost.run(JSON.stringify({ ...message.post, author: existing.author, authorId: existing.authorId }), message.post.id); }
-      if (message.type === 'comment' && message.postId && message.comment?.id) { const post = getPost(message.postId); if (post) { const comment = { ...message.comment, author: socket.user.username, authorId: socket.user.id, createdAt: message.comment.createdAt || new Date().toISOString() }; updatePost.run(JSON.stringify({ ...post, comments: [...(post.comments || []), comment] }), post.id); } }
+      if (message.type === 'comment' && message.postId && message.comment?.id) { const post = getPost(message.postId); if (post) { const comment = { ...message.comment, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || '🙂', createdAt: message.comment.createdAt || new Date().toISOString() }; updatePost.run(JSON.stringify({ ...post, comments: [...(post.comments || []), comment] }), post.id); } }
       if (message.type === 'delete' && message.id) { const existing = getPost(message.id); if (existing?.authorId === socket.user.id) deletePost.run(message.id); }
       if (message.type === 'vote' && message.id && Array.isArray(message.voters)) {
         const post = getPost(message.id);
         if (post) updatePost.run(JSON.stringify({ ...post, voters: message.voters }), post.id);
       }
-      if (message.type === 'chat' && message.message) addMessage(message.groupId, { ...message.message, author: socket.user.username, authorId: socket.user.id });
+      if (message.type === 'chat' && message.message) {
+        const groupId = String(message.groupId || 'lobby');
+        const directParts = groupId.split(':');
+        const isDirectMessage = directParts.length === 3 && directParts[0] === 'dm' && directParts.includes(socket.user.id) && directParts[1] !== directParts[2];
+        if (groupId === 'lobby' || isDirectMessage) addMessage(groupId, { ...message.message, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || '🙂' });
+      }
       broadcast();
     } catch (error) {
       console.error(`LAN message failed: ${error.message}`);
@@ -232,7 +274,11 @@ wss.on('connection', (socket) => {
 });
 
 server.listen(port, host, async () => {
-  console.log(`BestForums server: ws://YOUR_COMPUTER_IP:${port} (LAN) or place a TLS proxy in front for wss:// Internet access`);
+  const localAddress = lanAddress();
+  const serverUrl = localAddress ? `ws://${localAddress}:${port}` : `ws://YOUR_COMPUTER_IP:${port}`;
+  console.log(`BestForums server: ${serverUrl} (LAN) or place a TLS proxy in front for wss:// Internet access`);
+  console.log('Scan this QR in BestForums → Scan server QR:');
+  qr.generate(`bestforums://connect?server=${encodeURIComponent(serverUrl)}`, { small: true });
   console.log(`Database: ${databaseFile}`);
   console.log(`Archives: http://YOUR_COMPUTER_IP:${port}/archives`);
   try { await createArchive('startup'); } catch (error) { console.error(`Startup archive failed: ${error.message}`); }
