@@ -61,7 +61,7 @@ const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('h
 const passwordHash = (password, salt) => crypto.scryptSync(password, salt, 64).toString('hex');
 const validUsername = (username) => /^[a-zA-Z0-9_.-]{2,32}$/.test(username);
 const lanAddress = () => Object.values(os.networkInterfaces()).flat().find((address) => address && address.family === 'IPv4' && !address.internal)?.address;
-const publicUser = (user) => ({ id: user.id, username: user.username, avatar: user.avatar || '🙂' });
+const publicUser = (user) => ({ id: user.id, username: user.username, avatar: user.avatar || null });
 function createSession(user) {
   const token = crypto.randomBytes(32).toString('base64url');
   const now = Date.now();
@@ -71,9 +71,9 @@ function createSession(user) {
   return { token, user: publicUser(user), expiresAt };
 }
 function sessionForToken(token) { return typeof token === 'string' ? findSession.get(tokenHash(token), Date.now()) : null; }
-async function readJson(request) {
+async function readJson(request, maxBytes = 16 * 1024) {
   const chunks = []; let size = 0;
-  for await (const chunk of request) { size += chunk.length; if (size > 16 * 1024) throw new Error('Request body is too large.'); chunks.push(chunk); }
+  for await (const chunk of request) { size += chunk.length; if (size > maxBytes) throw new Error('Request body is too large.'); chunks.push(chunk); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw new Error('Invalid JSON.'); }
 }
 const authToken = (request) => request.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -158,7 +158,7 @@ const server = http.createServer(async (request, response) => {
       if (!validUsername(cleanName)) return sendJson(response, 400, { error: 'Username must be 2–32 characters: letters, numbers, dot, underscore, or hyphen.' });
       if (typeof password !== 'string' || password.length < 8) return sendJson(response, 400, { error: 'Password must contain at least 8 characters.' });
       if (findUserByName.get(cleanName)) return sendJson(response, 409, { error: 'That username is already taken.' });
-      const user = { id: crypto.randomUUID(), username: cleanName, avatar: '🙂' };
+      const user = { id: crypto.randomUUID(), username: cleanName, avatar: '' };
       const salt = crypto.randomBytes(16).toString('hex');
       insertUser.run(user.id, user.username, salt, passwordHash(password, salt), user.avatar, Date.now());
       return sendJson(response, 201, createSession(user));
@@ -185,9 +185,9 @@ const server = http.createServer(async (request, response) => {
     const user = sessionForToken(authToken(request));
     if (!user) return sendJson(response, 401, { error: 'Sign in required.' });
     try {
-      const { avatar } = await readJson(request);
+      const { avatar } = await readJson(request, 700 * 1024);
       const cleanAvatar = String(avatar || '').trim();
-      if (!['🙂', '😎', '🎨', '🎮', '🌙', '🦊', '🐸', '🛸'].includes(cleanAvatar)) return sendJson(response, 400, { error: 'Choose an avatar from the profile list.' });
+      if (!/^data:image\/(jpeg|png|webp);base64,[a-z0-9+/=]+$/i.test(cleanAvatar) || cleanAvatar.length > 680000) return sendJson(response, 400, { error: 'Choose a JPG, PNG, or WebP profile picture under 500 KB.' });
       updateUserAvatar.run(cleanAvatar, user.id);
       user.avatar = cleanAvatar;
       return sendJson(response, 200, { user: publicUser(user) });
@@ -250,9 +250,9 @@ wss.on('connection', (socket) => {
         (message.posts || []).forEach(addPost);
         db.exec('COMMIT');
       }
-      if (message.type === 'post' && message.post) addPost({ ...message.post, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || '🙂', anonymous: false });
+      if (message.type === 'post' && message.post) addPost({ ...message.post, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || null, anonymous: false });
       if (message.type === 'update' && message.post?.id) { const existing = getPost(message.post.id); if (existing?.authorId === socket.user.id) updatePost.run(JSON.stringify({ ...message.post, author: existing.author, authorId: existing.authorId }), message.post.id); }
-      if (message.type === 'comment' && message.postId && message.comment?.id) { const post = getPost(message.postId); if (post) { const comment = { ...message.comment, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || '🙂', createdAt: message.comment.createdAt || new Date().toISOString() }; updatePost.run(JSON.stringify({ ...post, comments: [...(post.comments || []), comment] }), post.id); } }
+      if (message.type === 'comment' && message.postId && message.comment?.id) { const post = getPost(message.postId); if (post) { const comment = { ...message.comment, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || null, createdAt: message.comment.createdAt || new Date().toISOString() }; updatePost.run(JSON.stringify({ ...post, comments: [...(post.comments || []), comment] }), post.id); } }
       if (message.type === 'delete' && message.id) { const existing = getPost(message.id); if (existing?.authorId === socket.user.id) deletePost.run(message.id); }
       if (message.type === 'vote' && message.id && Array.isArray(message.voters)) {
         const post = getPost(message.id);
@@ -262,7 +262,7 @@ wss.on('connection', (socket) => {
         const groupId = String(message.groupId || 'lobby');
         const directParts = groupId.split(':');
         const isDirectMessage = directParts.length === 3 && directParts[0] === 'dm' && directParts.includes(socket.user.id) && directParts[1] !== directParts[2];
-        if (groupId === 'lobby' || isDirectMessage) addMessage(groupId, { ...message.message, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || '🙂' });
+        if (groupId === 'lobby' || isDirectMessage) addMessage(groupId, { ...message.message, author: socket.user.username, authorId: socket.user.id, avatar: socket.user.avatar || null });
       }
       broadcast();
     } catch (error) {
