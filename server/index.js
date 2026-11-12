@@ -60,7 +60,16 @@ const SESSION_DAYS = Number(process.env.BESTFORUMS_SESSION_DAYS || 30);
 const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
 const passwordHash = (password, salt) => crypto.scryptSync(password, salt, 64).toString('hex');
 const validUsername = (username) => /^[a-zA-Z0-9_.-]{2,32}$/.test(username);
-const lanAddress = () => Object.values(os.networkInterfaces()).flat().find((address) => address && address.family === 'IPv4' && !address.internal)?.address;
+const lanAddress = () => {
+  try {
+    const addresses = Object.entries(os.networkInterfaces()).flatMap(([name, entries]) => (entries || []).map((address) => ({ name, ...address })))
+      .filter((address) => address.family === 'IPv4' && !address.internal && !/docker|veth|virbr|br-|^lo|^tun|^tap|^wg|tailscale|zerotier/i.test(address.name));
+    return addresses.find((address) => /wi-?fi|wlan|wireless|ethernet|^en|^eth/i.test(address.name))?.address || addresses[0]?.address;
+  } catch (error) {
+    console.error(`Could not detect a LAN address: ${error.message}`);
+    return null;
+  }
+};
 const publicUser = (user) => ({ id: user.id, username: user.username, avatar: user.avatar || null });
 function createSession(user) {
   const token = crypto.randomBytes(32).toString('base64url');
@@ -275,7 +284,7 @@ wss.on('connection', (socket) => {
 
 server.listen(port, host, async () => {
   const localAddress = lanAddress();
-  const serverUrl = localAddress ? `ws://${localAddress}:${port}` : `ws://YOUR_COMPUTER_IP:${port}`;
+  const serverUrl = process.env.BESTFORUMS_LAN_URL?.trim().replace(/\/$/, '') || (localAddress ? `ws://${localAddress}:${port}` : `ws://YOUR_COMPUTER_IP:${port}`);
   console.log(`BestForums server: ${serverUrl} (LAN) or place a TLS proxy in front for wss:// Internet access`);
   console.log('Scan this QR in BestForums → Scan server QR:');
   qr.generate(`bestforums://connect?server=${encodeURIComponent(serverUrl)}`, { small: true });
